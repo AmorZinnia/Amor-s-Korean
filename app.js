@@ -12,6 +12,21 @@ const TTS_ENDPOINT = "https://gentle-term-9239.ritacai20070808.workers.dev/";
 
 async function playKoreanTTS(text) {
   const r = await fetch(TTS_ENDPOINT, {
+    let _audioCtx = null;
+
+function unlockAudio() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (_audioCtx.state !== "running") _audioCtx.resume(); // 不要 await
+  return _audioCtx;
+}
+
+async function playKoreanTTS(text) {
+  if (!text) return;
+
+  // ✅ 关键：先在“点击”触发时解锁音频
+  const ctx = unlockAudio();
+
+  const r = await fetch(TTS_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text })
@@ -19,11 +34,17 @@ async function playKoreanTTS(text) {
 
   if (!r.ok) {
     const errText = await r.text().catch(() => "");
-    throw new Error(`Worker TTS failed: ${r.status} ${errText}`);
+    throw new Error(`TTS failed: ${r.status} ${errText}`);
   }
 
-  const blob = await r.blob();
-
+  // ✅ 用 WebAudio 播放，避免 audio.play() 被 blocked
+  const ab = await r.arrayBuffer();
+  const audioBuffer = await ctx.decodeAudioData(ab.slice(0));
+  const src = ctx.createBufferSource();
+  src.buffer = audioBuffer;
+  src.connect(ctx.destination);
+  src.start(0);
+}
   // 保险：确认拿到的是音频
   const ct = r.headers.get("content-type") || "";
   if (!ct.includes("audio")) {
