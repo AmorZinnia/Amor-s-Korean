@@ -105,6 +105,31 @@ function masteredCount(){
   return state.items.filter(it => (it.stageIndex ?? 0) >= EBBINGHAUS_DAYS.length - 1).length;
 }
 
+/* =====================================================
+   ✅ NEW: Delete / Reset progress helpers
+   - delete item
+   - reset review progress (clear review record)
+===================================================== */
+function deleteItemById(id){
+  const idx = state.items.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  state.items.splice(idx, 1);
+  saveState(state);
+  renderAll();
+}
+
+function resetItemProgressById(id){
+  const idx = state.items.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  const it = state.items[idx];
+  it.stageIndex = 0;
+  it.lastReviewedAt = null;
+  it.nextReviewAt = nowMs(); // reset to due now (day0)
+  state.items[idx] = it;
+  saveState(state);
+  renderAll();
+}
+
 // ===================== TTS (Worker with cache + robust play) =====================
 
 // ⭐ 让“同一个词重复播放”变快：内存缓存（不走网络）
@@ -146,7 +171,6 @@ async function _playFromObjectURL(url){
   audio.src = url;
 
   try {
-    // 有些浏览器需要先 load()
     audio.load();
     await audio.play();
     return { ok: true };
@@ -160,7 +184,6 @@ async function _playViaWebAudio(arrayBuffer){
   if (!Ctx) throw new Error("No AudioContext");
   const ctx = new Ctx();
 
-  // iOS/某些浏览器：需要在用户点击事件内 resume
   try { await ctx.resume?.(); } catch {}
 
   const buf = await ctx.decodeAudioData(arrayBuffer.slice(0));
@@ -174,22 +197,17 @@ async function _playViaWebAudio(arrayBuffer){
 async function playKoreanTTS(text){
   if (!text) return;
 
-  // 统一 key（同一个词重复点击直接秒播）
   const key = `ko|${text.trim()}`;
 
-  // 1) cache hit => 不请求网络
   const cached = _cacheGet(key);
   if (cached?.url) {
     const res = await _playFromObjectURL(cached.url);
     if (res.ok) return;
-    // 如果 objectURL 播放失败，继续走解码备用（需要 arrayBuffer -> 但我们没存）
-    // 所以失败就继续重新拉一次
   }
 
   console.time?.("[TTS] fetch");
 
-  // 2) fetch with timeout
-  const t = _timeout(12000); // 12s 超时（你说 15 秒很慢，我们先卡在 12）
+  const t = _timeout(12000);
   let r;
   try {
     r = await fetch(TTS_ENDPOINT, {
@@ -211,12 +229,9 @@ async function playKoreanTTS(text){
 
   const ct = (r.headers.get("content-type") || "").toLowerCase();
 
-  // 3) Prefer blob->audio
   const blob = await r.blob();
 
-  // 保险：如果返回不是 audio，直接报错（你之前见过 not supported）
   if (!ct.includes("audio") && blob.type && !blob.type.includes("audio")) {
-    // 仍然让你看到具体返回
     console.warn("[TTS] content-type not audio:", ct, "blob.type:", blob.type);
   }
 
@@ -226,7 +241,6 @@ async function playKoreanTTS(text){
   const res = await _playFromObjectURL(url);
   if (res.ok) return;
 
-  // 4) Fallback: WebAudio decode (需要 arrayBuffer)
   try {
     const ab = await blob.arrayBuffer();
     await _playViaWebAudio(ab);
@@ -260,14 +274,12 @@ async function speakKoWebSpeech(text){
 async function speakKo(text){
   if (!text) return;
 
-  // worker -> neural -> webspeech（按你选择）
   if (settings.voiceEngine === "worker") {
     try {
       await playKoreanTTS(text);
       return;
     } catch (e) {
       console.warn("[TTS] worker failed, fallback:", e);
-      // 失败就继续 fallback
     }
   }
 
@@ -281,6 +293,16 @@ async function speakKo(text){
   }
 
   await speakKoWebSpeech(text);
+}
+
+/* =====================================================
+   ✅ NEW: sentence playback
+===================================================== */
+async function speakKoSentenceByItem(item){
+  if (!item) return;
+  const s = (item.koSentence || "").trim();
+  if (s) return speakKo(s);
+  return speakKo((item.ko || "").trim());
 }
 
 // ===================== UI =====================
@@ -340,6 +362,49 @@ function renderStats(){
   statNextTime.textContent = fmtTime(getNextReviewTime());
 }
 
+/* =====================================================
+   ✅ NEW: inject "🔊例句" button next to existing btnSpeak
+   - no need to edit HTML
+===================================================== */
+function ensureSentenceSpeakButton(){
+  if (!btnSpeak) return;
+  if (document.getElementById("btnSpeakSentence")) return;
+
+  const b = document.createElement("button");
+  b.id = "btnSpeakSentence";
+  b.type = "button";
+  b.textContent = "🔊例句";
+  b.style.marginLeft = "8px";
+  b.style.cursor = "pointer";
+
+  b.addEventListener("click", ()=>{
+    // Prefer currentItem. Fallback to DOM text.
+    const it = currentItem || {
+      ko: (cardKo?.textContent || ""),
+      koSentence: (cardKoSent?.textContent || "")
+    };
+    speakKoSentenceByItem(it);
+  });
+
+  btnSpeak.insertAdjacentElement("afterend", b);
+}
+
+/* =====================================================
+   ✅ NEW: helper to build action buttons in list
+===================================================== */
+function _makeSmallBtn(text){
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = text;
+  b.style.cursor = "pointer";
+  b.style.padding = "4px 8px";
+  b.style.borderRadius = "8px";
+  b.style.border = "1px solid rgba(0,0,0,0.12)";
+  b.style.background = "rgba(255,255,255,0.7)";
+  b.style.fontSize = "12px";
+  return b;
+}
+
 function renderList(){
   const showZh = toggleShowZh.checked;
   wordList.innerHTML = "";
@@ -379,6 +444,53 @@ function renderList(){
     // 点击词条发音
     div.addEventListener("click", ()=> speakKo(it.ko));
 
+    /* ===================== ✅ NEW: per-item action buttons ===================== */
+    const actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.flexWrap = "wrap";
+    actions.style.gap = "6px";
+    actions.style.marginTop = "6px";
+    actions.style.justifyContent = "flex-end";
+
+    // 🔊词
+    const bWord = _makeSmallBtn("🔊词");
+    bWord.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      speakKo(it.ko);
+    });
+
+    // 🔊句
+    const bSent = _makeSmallBtn("🔊句");
+    bSent.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      speakKoSentenceByItem(it);
+    });
+
+    // ♻️重置复习
+    const bReset = _makeSmallBtn("♻️重置");
+    bReset.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      const ok = confirm(`要清除「${it.ko}」的复习记录吗？\n（会变回新词：阶段=0，立刻可复习）`);
+      if (!ok) return;
+      resetItemProgressById(it.id);
+    });
+
+    // 🗑删除
+    const bDel = _makeSmallBtn("🗑删除");
+    bDel.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      const ok = confirm(`确定删除「${it.ko}」吗？\n（删除后不可恢复）`);
+      if (!ok) return;
+      deleteItemById(it.id);
+    });
+
+    actions.appendChild(bWord);
+    actions.appendChild(bSent);
+    actions.appendChild(bReset);
+    actions.appendChild(bDel);
+    right.appendChild(actions);
+    /* ===================== end actions ===================== */
+
     wordList.appendChild(div);
   }
 }
@@ -412,12 +524,19 @@ function nextCard(){
     cardKo.textContent = "完成 ✅";
     $("#cardStageArea").hidden = true;
     btnSpeak.disabled = true;
+    // ✅ disable sentence button too
+    const bSent = document.getElementById("btnSpeakSentence");
+    if (bSent) bSent.disabled = true;
+
     nextInfo.textContent = "—";
     btnNext.textContent = "返回";
     btnNext.onclick = ()=>{
       reviewPanel.hidden = true;
       $("#cardStageArea").hidden = false;
       btnSpeak.disabled = false;
+      const bSent2 = document.getElementById("btnSpeakSentence");
+      if (bSent2) bSent2.disabled = false;
+
       btnNext.textContent = "下一张";
       btnNext.onclick = nextCard;
       renderAll();
@@ -428,6 +547,8 @@ function nextCard(){
   $("#cardStageArea").hidden = false;
   reveal.hidden = true;
   btnSpeak.disabled = false;
+  const bSent = document.getElementById("btnSpeakSentence");
+  if (bSent) bSent.disabled = false;
 
   cardKo.textContent = currentItem.ko || "—";
   cardZh.textContent = currentItem.zh || "—";
@@ -625,5 +746,10 @@ settingsModal.addEventListener("close", ()=>{
 if ("speechSynthesis" in window){
   speechSynthesis.onvoiceschanged = ()=>{};
 }
+
+/* =====================================================
+   ✅ NEW: ensure sentence speak button exists
+===================================================== */
+ensureSentenceSpeakButton();
 
 renderAll();
