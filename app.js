@@ -2,9 +2,12 @@
    - LocalStorage persistence
    - Ebbinghaus intervals: 0,1,2,3,5,7,10,15,30 days
    - Rating mapping: again/hard/good/easy
-   - Default TTS: Web Speech API
-   - Optional Neural TTS hook: window.NEURAL_TTS.speak(text, lang)
+   - TTS engines:
+       worker   -> Cloudflare Worker (TTS_ENDPOINT)
+       webspeech-> Browser SpeechSynthesis
+       neural   -> window.NEURAL_TTS.speak(text, lang) (optional hook)
 */
+
 const TTS_ENDPOINT = "https://gentle-term-9239.ritacai20070808.workers.dev/";
 
 async function playKoreanTTS(text) {
@@ -16,16 +19,33 @@ async function playKoreanTTS(text) {
 
   if (!r.ok) {
     const errText = await r.text().catch(() => "");
-    throw new Error(`TTS failed: ${r.status} ${errText}`);
+    throw new Error(`Worker TTS failed: ${r.status} ${errText}`);
   }
 
   const blob = await r.blob();
+
+  // 保险：确认拿到的是音频
+  const ct = r.headers.get("content-type") || "";
+  if (!ct.includes("audio")) {
+    // 有些 worker 可能没写 content-type，这里不强卡死；但给提示
+    console.warn("[TTS] content-type not audio:", ct);
+  }
+
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);
 
   audio.onended = () => URL.revokeObjectURL(url);
-  audio.play();
+  audio.onerror = (e) => console.error("[TTS] Audio error:", e);
+
+  try {
+    await audio.play();
+  } catch (e) {
+    console.error("[TTS] audio.play() blocked:", e);
+    // 常见原因：浏览器拦截自动播放；但你是点击触发一般不会
+    throw e;
+  }
 }
+
 const STORAGE_KEY = "morandi_korean_srs_v1";
 const SETTINGS_KEY = "morandi_korean_srs_settings_v1";
 
@@ -36,7 +56,10 @@ function addDaysMs(days){ return nowMs() + days * 24 * 60 * 60 * 1000; }
 function fmtTime(ts){
   if (!ts) return "—";
   const d = new Date(ts);
-  return d.toLocaleString(undefined, { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
+  return d.toLocaleString(undefined, {
+    year:"numeric", month:"2-digit", day:"2-digit",
+    hour:"2-digit", minute:"2-digit"
+  });
 }
 function uid(){
   return Math.random().toString(16).slice(2) + "-" + Math.random().toString(16).slice(2);
@@ -53,6 +76,7 @@ function saveState(state){
 
 function loadSettings(){
   const raw = localStorage.getItem(SETTINGS_KEY);
+  // ✅ 默认用 worker（你要的自然发音）
   const def = { voiceEngine: "worker" };
   if (!raw) return def;
   try { return { ...def, ...JSON.parse(raw) }; } catch { return def; }
@@ -74,8 +98,8 @@ function normalizeItem(obj){
     pron: "",
     createdAt: nowMs(),
     lastReviewedAt: null,
-    stageIndex: 0,        // index in EBBINGHAUS_DAYS
-    nextReviewAt: nowMs() // due now for new words (day0)
+    stageIndex: 0,
+    nextReviewAt: nowMs()
   };
   return { ...base, ...obj };
 }
@@ -86,15 +110,10 @@ function computeNext(stageIndex){
 }
 
 function applyRating(item, rate){
-  // Logic:
-  // again (不会): reset to 1-day interval (index 1)
-  // hard  (模糊): step back 1 (min 1) then forward 0 (i.e., cautious)
-  // good  (会): forward 1
-  // easy  (简单): forward 2
   let idx = item.stageIndex ?? 0;
 
-  if (rate === "again") idx = 1;            // tomorrow
-  if (rate === "hard")  idx = Math.max(1, idx); // keep at least 1
+  if (rate === "again") idx = 1;
+  if (rate === "hard")  idx = Math.max(1, idx);
   if (rate === "good")  idx = Math.min(EBBINGHAUS_DAYS.length - 1, idx + 1);
   if (rate === "easy")  idx = Math.min(EBBINGHAUS_DAYS.length - 1, idx + 2);
 
@@ -105,8 +124,9 @@ function applyRating(item, rate){
 
 function getDueItems(){
   const t = nowMs();
-  return state.items.filter(it => (it.nextReviewAt ?? 0) <= t)
-                    .sort((a,b)=>(a.nextReviewAt ?? 0)-(b.nextReviewAt ?? 0));
+  return state.items
+    .filter(it => (it.nextReviewAt ?? 0) <= t)
+    .sort((a,b)=>(a.nextReviewAt ?? 0)-(b.nextReviewAt ?? 0));
 }
 function getNextReviewTime(){
   const upcoming = state.items
@@ -115,22 +135,25 @@ function getNextReviewTime(){
   return upcoming?.nextReviewAt ?? null;
 }
 function masteredCount(){
-  // mastered = stageIndex at last interval (30 days) AND nextReviewAt is set beyond that stage
   return state.items.filter(it => (it.stageIndex ?? 0) >= EBBINGHAUS_DAYS.length - 1).length;
 }
 
 // ---------- TTS ----------
 async function speakKo(text){
   if (!text) return;
-  // ⭐ 使用你的 Worker TTS（首尔自然音）
+
+  // 1) Worker TTS（你现在已经 200 成功的那个）
   if (settings.voiceEngine === "worker") {
     try {
       await playKoreanTTS(text);
       return;
     } catch (e) {
-      console.warn("Worker TTS failed, fallback:", e);
+      console.warn("Worker TTS failed, fallback to WebSpeech:", e);
+      // 继续往下走 fallback
     }
   }
+
+  // 2) Neural hook（可选）
   if (settings.voiceEngine === "neural" && window.NEURAL_TTS?.speak) {
     try {
       await window.NEURAL_TTS.speak(text, "ko-KR");
@@ -140,17 +163,17 @@ async function speakKo(text){
     }
   }
 
-  // Web Speech fallback
+  // 3) Web Speech fallback
   if (!("speechSynthesis" in window)) {
     alert("此设备不支持浏览器语音合成。");
     return;
   }
+
   const u = new SpeechSynthesisUtterance(text);
   u.lang = "ko-KR";
   u.rate = 0.95;
   u.pitch = 1.0;
 
-  // try choose best Korean voice
   const voices = speechSynthesis.getVoices?.() ?? [];
   const koVoices = voices.filter(v => (v.lang || "").toLowerCase().startsWith("ko"));
   if (koVoices.length) u.voice = koVoices[0];
@@ -202,6 +225,7 @@ const csvFile = $("#csvFile");
 const csvText = $("#csvText");
 const btnImportCsv = $("#btnImportCsv");
 
+// ⚠️ 允许 HTML 没有这个 select：不会崩
 const voiceEngine = $("#voiceEngine");
 
 let sessionQueue = [];
@@ -210,14 +234,15 @@ let showingReveal = false;
 
 function renderStats(){
   const due = getDueItems().length;
-  statDueToday.textContent = String(due);
-  statTotal.textContent = String(state.items.length);
-  statMastered.textContent = String(masteredCount());
-  statNextTime.textContent = fmtTime(getNextReviewTime());
+  if (statDueToday) statDueToday.textContent = String(due);
+  if (statTotal) statTotal.textContent = String(state.items.length);
+  if (statMastered) statMastered.textContent = String(masteredCount());
+  if (statNextTime) statNextTime.textContent = fmtTime(getNextReviewTime());
 }
 
 function renderList(){
-  const showZh = toggleShowZh.checked;
+  if (!wordList) return;
+  const showZh = !!toggleShowZh?.checked;
   wordList.innerHTML = "";
 
   const items = [...state.items].sort((a,b)=>(b.createdAt ?? 0)-(a.createdAt ?? 0));
@@ -252,6 +277,7 @@ function renderList(){
     div.appendChild(left);
     div.appendChild(right);
 
+    // ✅ 点击就发音（走 speakKo -> worker）
     div.addEventListener("click", ()=> speakKo(it.ko));
 
     wordList.appendChild(div);
@@ -259,13 +285,10 @@ function renderList(){
 }
 
 function openReview(mode){
-  // mode: "due" or "new"
   const due = getDueItems();
   if (mode === "due"){
     sessionQueue = due;
   } else {
-    // new words = stageIndex 0 and never reviewed, or recently added
-    const t = nowMs();
     const fresh = state.items
       .filter(it => (it.lastReviewedAt == null))
       .sort((a,b)=>(a.createdAt ?? 0)-(b.createdAt ?? 0));
@@ -277,7 +300,7 @@ function openReview(mode){
     return;
   }
 
-  reviewPanel.hidden = false;
+  if (reviewPanel) reviewPanel.hidden = false;
   nextCard();
 }
 
@@ -286,53 +309,60 @@ function nextCard(){
   showingReveal = false;
 
   if (!currentItem){
-    reveal.hidden = true;
-    cardKo.textContent = "完成 ✅";
-    $("#cardStageArea").hidden = true;
-    btnSpeak.disabled = true;
-    nextInfo.textContent = "—";
-    btnNext.textContent = "返回";
-    btnNext.onclick = ()=>{
-      reviewPanel.hidden = true;
-      $("#cardStageArea").hidden = false;
-      btnSpeak.disabled = false;
-      btnNext.textContent = "下一张";
-      btnNext.onclick = nextCard;
-      renderAll();
-    };
+    if (reveal) reveal.hidden = true;
+    if (cardKo) cardKo.textContent = "完成 ✅";
+    const stageArea = $("#cardStageArea");
+    if (stageArea) stageArea.hidden = true;
+    if (btnSpeak) btnSpeak.disabled = true;
+    if (nextInfo) nextInfo.textContent = "—";
+
+    if (btnNext) {
+      btnNext.textContent = "返回";
+      btnNext.onclick = ()=>{
+        if (reviewPanel) reviewPanel.hidden = true;
+        if (stageArea) stageArea.hidden = false;
+        if (btnSpeak) btnSpeak.disabled = false;
+        btnNext.textContent = "下一张";
+        btnNext.onclick = nextCard;
+        renderAll();
+      };
+    }
     return;
   }
 
-  $("#cardStageArea").hidden = false;
-  reveal.hidden = true;
-  btnSpeak.disabled = false;
+  const stageArea = $("#cardStageArea");
+  if (stageArea) stageArea.hidden = false;
+  if (reveal) reveal.hidden = true;
+  if (btnSpeak) btnSpeak.disabled = false;
 
-  cardKo.textContent = currentItem.ko || "—";
-  cardZh.textContent = currentItem.zh || "—";
-  cardKoSent.textContent = currentItem.koSentence || "—";
-  cardZhSent.textContent = currentItem.zhSentence || "—";
-  cardPron.textContent = currentItem.pron || "—";
+  if (cardKo) cardKo.textContent = currentItem.ko || "—";
+  if (cardZh) cardZh.textContent = currentItem.zh || "—";
+  if (cardKoSent) cardKoSent.textContent = currentItem.koSentence || "—";
+  if (cardZhSent) cardZhSent.textContent = currentItem.zhSentence || "—";
+  if (cardPron) cardPron.textContent = currentItem.pron || "—";
 
-  nextInfo.textContent = `当前阶段：${currentItem.stageIndex ?? 0}（间隔 ${EBBINGHAUS_DAYS[currentItem.stageIndex ?? 0]} 天）`;
+  if (nextInfo) {
+    const idx = currentItem.stageIndex ?? 0;
+    nextInfo.textContent = `当前阶段：${idx}（间隔 ${EBBINGHAUS_DAYS[idx]} 天）`;
+  }
 }
 
 function revealCard(){
   showingReveal = true;
-  reveal.hidden = false;
+  if (reveal) reveal.hidden = false;
 }
 
 function onRate(rate){
   if (!currentItem) return;
   applyRating(currentItem, rate);
 
-  // persist update
   const idx = state.items.findIndex(x => x.id === currentItem.id);
   if (idx >= 0) state.items[idx] = currentItem;
   saveState(state);
 
   revealCard();
   const nextAt = fmtTime(currentItem.nextReviewAt);
-  nextInfo.textContent = `下一次复习：${nextAt}（阶段 ${currentItem.stageIndex} / ${EBBINGHAUS_DAYS.length-1}）`;
+  if (nextInfo) nextInfo.textContent = `下一次复习：${nextAt}（阶段 ${currentItem.stageIndex} / ${EBBINGHAUS_DAYS.length-1}）`;
 }
 
 function renderAll(){
@@ -341,11 +371,11 @@ function renderAll(){
 }
 
 function addOneFromInputs(){
-  const ko = (inKo.value || "").trim();
-  const zh = (inZh.value || "").trim();
-  const koSentence = (inKoSent.value || "").trim();
-  const zhSentence = (inZhSent.value || "").trim();
-  const pron = (inPron.value || "").trim();
+  const ko = (inKo?.value || "").trim();
+  const zh = (inZh?.value || "").trim();
+  const koSentence = (inKoSent?.value || "").trim();
+  const zhSentence = (inZhSent?.value || "").trim();
+  const pron = (inPron?.value || "").trim();
 
   if (!ko) { alert("请填写韩语单词"); return; }
 
@@ -353,17 +383,16 @@ function addOneFromInputs(){
   state.items.unshift(item);
   saveState(state);
 
-  inKo.value = "";
-  inZh.value = "";
-  inKoSent.value = "";
-  inZhSent.value = "";
-  inPron.value = "";
+  if (inKo) inKo.value = "";
+  if (inZh) inZh.value = "";
+  if (inKoSent) inKoSent.value = "";
+  if (inZhSent) inZhSent.value = "";
+  if (inPron) inPron.value = "";
 
   renderAll();
 }
 
 function parseCSV(text){
-  // Simple CSV parser: handles quoted commas minimally
   const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
   if (!lines.length) return [];
 
@@ -373,7 +402,7 @@ function parseCSV(text){
     let inQ = false;
     for (let i=0; i<line.length; i++){
       const ch = line[i];
-      if (ch === '"' ) {
+      if (ch === '"') {
         if (inQ && line[i+1] === '"'){ cur += '"'; i++; }
         else inQ = !inQ;
       } else if (ch === ',' && !inQ){
@@ -386,9 +415,13 @@ function parseCSV(text){
     return out.map(x=>x.trim());
   });
 
-  // If first row looks like header, skip it
   const header = rows[0].map(s=>s.toLowerCase());
-  const looksHeader = header.includes("ko") || header.includes("korean") || header.includes("zh") || header.includes("ko_sentence");
+  const looksHeader =
+    header.includes("ko") ||
+    header.includes("korean") ||
+    header.includes("zh") ||
+    header.includes("ko_sentence");
+
   const dataRows = looksHeader ? rows.slice(1) : rows;
 
   return dataRows.map(cols => {
@@ -421,19 +454,19 @@ function exportJSON(){
 }
 
 // ---------- Events ----------
-btnOpenImport.addEventListener("click", ()=> importModal.showModal());
-btnSettings.addEventListener("click", ()=>{
-  voiceEngine.value = settings.voiceEngine || "webspeech";
-  settingsModal.showModal();
+btnOpenImport?.addEventListener("click", ()=> importModal?.showModal());
+btnSettings?.addEventListener("click", ()=>{
+  if (voiceEngine) voiceEngine.value = settings.voiceEngine || "worker";
+  settingsModal?.showModal();
 });
-btnExport.addEventListener("click", exportJSON);
+btnExport?.addEventListener("click", exportJSON);
 
-btnStartReview.addEventListener("click", ()=> openReview("due"));
-btnStudyNew.addEventListener("click", ()=> openReview("new"));
+btnStartReview?.addEventListener("click", ()=> openReview("due"));
+btnStudyNew?.addEventListener("click", ()=> openReview("new"));
 
-btnSpeak.addEventListener("click", ()=> speakKo(currentItem?.ko || cardKo.textContent));
+btnSpeak?.addEventListener("click", ()=> speakKo(currentItem?.ko || cardKo?.textContent || ""));
 
-btnNext.addEventListener("click", ()=>{
+btnNext?.addEventListener("click", ()=>{
   if (!showingReveal){
     alert("请先选择掌握程度（不会/模糊/会/简单）");
     return;
@@ -445,32 +478,33 @@ document.querySelectorAll("[data-rate]").forEach(btn=>{
   btn.addEventListener("click", ()=> onRate(btn.dataset.rate));
 });
 
-toggleShowZh.addEventListener("change", renderList);
+toggleShowZh?.addEventListener("change", renderList);
 
-// Tabs in import modal
 document.querySelectorAll(".tab").forEach(tab=>{
   tab.addEventListener("click", ()=>{
     document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
     tab.classList.add("active");
     const which = tab.dataset.tab;
-    $("#tab-manual").hidden = which !== "manual";
-    $("#tab-csv").hidden = which !== "csv";
+    const m = $("#tab-manual");
+    const c = $("#tab-csv");
+    if (m) m.hidden = which !== "manual";
+    if (c) c.hidden = which !== "csv";
   });
 });
 
-btnAddOne.addEventListener("click", (e)=>{
+btnAddOne?.addEventListener("click", (e)=>{
   e.preventDefault();
   addOneFromInputs();
 });
 
-btnImportCsv.addEventListener("click", async (e)=>{
+btnImportCsv?.addEventListener("click", async (e)=>{
   e.preventDefault();
 
   let imported = [];
-  const file = csvFile.files?.[0];
+  const file = csvFile?.files?.[0];
   if (file){
     imported = await importCSVFromFile(file);
-  } else if (csvText.value.trim()){
+  } else if ((csvText?.value || "").trim()){
     imported = parseCSV(csvText.value.trim());
   } else {
     alert("请上传CSV或粘贴CSV内容");
@@ -485,22 +519,21 @@ btnImportCsv.addEventListener("click", async (e)=>{
   state.items = [...imported, ...state.items];
   saveState(state);
 
-  csvFile.value = "";
-  csvText.value = "";
+  if (csvFile) csvFile.value = "";
+  if (csvText) csvText.value = "";
 
   renderAll();
-  importModal.close();
+  importModal?.close();
   alert(`导入完成：${imported.length} 个`);
 });
 
-// Settings save on close
-settingsModal.addEventListener("close", ()=>{
-  const v = voiceEngine.value;
+settingsModal?.addEventListener("close", ()=>{
+  const v = voiceEngine?.value || settings.voiceEngine || "worker";
   settings.voiceEngine = v;
   saveSettings(settings);
 });
 
-// iOS needs voices ready sometimes
+// iOS/部分浏览器需要 voices ready
 if ("speechSynthesis" in window){
   speechSynthesis.onvoiceschanged = ()=>{};
 }
