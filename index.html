@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Morandi Korean SRS</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">ㅎ</div>
+      <div>
+        <div class="title">Morandi Korean SRS</div>
+        <div class="subtitle">卡片式 · 艾宾浩斯复习 · CSV导入</div>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <button class="btn ghost" id="btnOpenImport">导入</button>
+      <button class="btn ghost" id="btnExport">导出</button>
+      <button class="btn ghost" id="btnSettings">设置</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="grid2">
+      <div class="panel">
+        <div class="panel-title">复习情况</div>
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-k">今日到期</div>
+            <div class="stat-v" id="statDueToday">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-k">下一次复习</div>
+            <div class="stat-v small" id="statNextTime">—</div>
+          </div>
+          <div class="stat">
+            <div class="stat-k">已学单词</div>
+            <div class="stat-v" id="statTotal">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-k">已掌握(30天后)</div>
+            <div class="stat-v" id="statMastered">0</div>
+          </div>
+        </div>
+
+        <div class="panel-actions">
+          <button class="btn primary" id="btnStartReview">开始复习</button>
+          <button class="btn" id="btnStudyNew">学习新词</button>
+        </div>
+
+        <div class="hint">
+          复习逻辑：不会→回退；模糊→小步推进；会→推进；简单→跳两格推进
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title row">
+          <span>已学单词</span>
+          <label class="switch">
+            <input type="checkbox" id="toggleShowZh" />
+            <span class="slider"></span>
+            <span class="switch-label">显示中文</span>
+          </label>
+        </div>
+
+        <div class="list" id="wordList"></div>
+      </div>
+    </section>
+
+    <section class="review panel" id="reviewPanel" hidden>
+      <div class="panel-title">卡片</div>
+
+      <div class="card" id="card">
+        <div class="card-top">
+          <div class="ko" id="cardKo">—</div>
+          <button class="btn icon" id="btnSpeak" title="播放">
+            🔊
+          </button>
+        </div>
+
+        <div class="card-mid" id="cardStageArea">
+          <div class="prompt">你掌握得怎么样？</div>
+          <div class="rating">
+            <button class="btn danger" data-rate="again">不会</button>
+            <button class="btn warn" data-rate="hard">模糊</button>
+            <button class="btn ok" data-rate="good">会</button>
+            <button class="btn great" data-rate="easy">简单</button>
+          </div>
+        </div>
+
+        <div class="reveal" id="reveal" hidden>
+          <div class="field">
+            <div class="label">中文翻译</div>
+            <div class="value" id="cardZh">—</div>
+          </div>
+          <div class="field">
+            <div class="label">韩语例句</div>
+            <div class="value mono" id="cardKoSent">—</div>
+          </div>
+          <div class="field">
+            <div class="label">中文例句翻译</div>
+            <div class="value" id="cardZhSent">—</div>
+          </div>
+          <div class="field">
+            <div class="label">发音(可选)</div>
+            <div class="value mono" id="cardPron">—</div>
+          </div>
+
+          <div class="next-row">
+            <div class="next-info" id="nextInfo">下一次：—</div>
+            <button class="btn primary" id="btnNext">下一张</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Import Modal -->
+  <dialog class="modal" id="importModal">
+    <form method="dialog" class="modal-box">
+      <div class="modal-title">导入单词</div>
+
+      <div class="tabs">
+        <button type="button" class="tab active" data-tab="manual">手动输入</button>
+        <button type="button" class="tab" data-tab="csv">CSV 上传</button>
+      </div>
+
+      <section class="tabpage" id="tab-manual">
+        <div class="grid2 tight">
+          <div class="input">
+            <label>韩语单词</label>
+            <input id="inKo" placeholder="예: 설레다" />
+          </div>
+          <div class="input">
+            <label>中文翻译</label>
+            <input id="inZh" placeholder="例：心动、激动" />
+          </div>
+        </div>
+
+        <div class="input">
+          <label>韩语例句</label>
+          <input id="inKoSent" placeholder="예: 나는 요즘 자주 설렌다." />
+        </div>
+
+        <div class="input">
+          <label>中文例句翻译</label>
+          <input id="inZhSent" placeholder="例：我最近经常心动。" />
+        </div>
+
+        <div class="input">
+          <label>发音(可选)</label>
+          <input id="inPron" placeholder="例：seol-le-da（可留空）" />
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn" value="cancel">取消</button>
+          <button class="btn primary" id="btnAddOne" value="ok">添加</button>
+        </div>
+      </section>
+
+      <section class="tabpage" id="tab-csv" hidden>
+        <div class="hint">
+          CSV列顺序：ko, zh, ko_sentence, zh_sentence, pron(可选)<br/>
+          第一行可有表头，也可以没有。
+        </div>
+
+        <div class="input">
+          <label>上传 CSV 文件</label>
+          <input type="file" id="csvFile" accept=".csv,text/csv" />
+        </div>
+
+        <div class="input">
+          <label>或直接粘贴 CSV 内容</label>
+          <textarea id="csvText" rows="8" placeholder="ko,zh,ko_sentence,zh_sentence,pron"></textarea>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn" value="cancel">取消</button>
+          <button class="btn primary" id="btnImportCsv" value="ok">导入</button>
+        </div>
+      </section>
+    </form>
+  </dialog>
+
+  <!-- Settings Modal -->
+  <dialog class="modal" id="settingsModal">
+    <form method="dialog" class="modal-box">
+      <div class="modal-title">设置</div>
+
+      <div class="input">
+        <label>语音引擎</label>
+        <select id="voiceEngine">
+          <option value="webspeech">浏览器 TTS（免配置）</option>
+          <option value="neural">Neural TTS（更自然，需要Key）</option>
+        </select>
+      </div>
+
+      <div class="input">
+        <label>Neural TTS 提示</label>
+        <div class="hint">
+          你可以用 Azure / Naver Clova / Google 的神经网络韩语音色。<br/>
+          我已在 app.js 预留接口：window.NEURAL_TTS.speak(text, lang)。
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn primary" value="ok">完成</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Optional neural TTS config -->
+  <script src="./tts-config.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
