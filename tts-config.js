@@ -1,7 +1,7 @@
 // tts-config.js
 // Gemini Pro TTS (Algenib) via Cloudflare Worker + IndexedDB cache
 
-const WORKER_URL = "https://YOUR_WORKER_SUBDOMAIN.workers.dev";
+const WORKER_URL = "https://gentle-term-9239.ritacai20070808.workers.dev/";
 
 const DB_NAME = "morandi_tts_cache_gemini_v1";
 const STORE = "audio";
