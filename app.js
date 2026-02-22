@@ -53,7 +53,7 @@ function saveState(state){
 
 function loadSettings(){
   const raw = localStorage.getItem(SETTINGS_KEY);
-  const def = { voiceEngine: "webspeech" };
+  const def = { voiceEngine: "worker" };
   if (!raw) return def;
   try { return { ...def, ...JSON.parse(raw) }; } catch { return def; }
 }
@@ -122,7 +122,15 @@ function masteredCount(){
 // ---------- TTS ----------
 async function speakKo(text){
   if (!text) return;
-
+  // ⭐ 使用你的 Worker TTS（首尔自然音）
+  if (settings.voiceEngine === "worker") {
+    try {
+      await playKoreanTTS(text);
+      return;
+    } catch (e) {
+      console.warn("Worker TTS failed, fallback:", e);
+    }
+  }
   if (settings.voiceEngine === "neural" && window.NEURAL_TTS?.speak) {
     try {
       await window.NEURAL_TTS.speak(text, "ko-KR");
