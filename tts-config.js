@@ -1,10 +1,9 @@
 // tts-config.js
-// Google WaveNet via Cloudflare Worker + IndexedDB cache (超级省钱)
+// Gemini Pro TTS (Algenib) via Cloudflare Worker + IndexedDB cache
 
-const WORKER_URL = "https://gentle-term-9239.ritacai20070808.workers.dev/";
+const WORKER_URL = "https://YOUR_WORKER_SUBDOMAIN.workers.dev";
 
-// --- IndexedDB cache ---
-const DB_NAME = "morandi_tts_cache_v1";
+const DB_NAME = "morandi_tts_cache_gemini_v1";
 const STORE = "audio";
 
 function openDB() {
@@ -44,7 +43,7 @@ async function dbSet(key, value) {
 async function sha256Hex(str) {
   const enc = new TextEncoder().encode(str);
   const digest = await crypto.subtle.digest("SHA-256", enc);
-  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function playBlob(blob) {
@@ -54,34 +53,32 @@ async function playBlob(blob) {
   a.onended = () => URL.revokeObjectURL(url);
 }
 
-// --- Public neural TTS hook ---
+// 你现在 Worker 已经“锁死”模型/voice/prompt
+// 网页端只传 text 即可；这样最稳，也不会被意外改掉
 window.NEURAL_TTS = {
   async speak(text, lang) {
-    const voiceName = "ko-KR-Wavenet-A"; // 你可以换 B/C/D 做“更像你喜欢的那个首尔人声线”
-    const speakingRate = 0.98;          // 更口语自然：0.95~1.02 之间试
-    const pitch = 0.0;
+    const clean = (text || "").trim();
+    if (!clean) return;
 
-    const key = await sha256Hex(`${voiceName}|${speakingRate}|${pitch}|${text}`);
+    // cache key：同一句话只生成一次，后续反复播放不花钱
+    const key = await sha256Hex(`gemini-pro-tts-algenib|${clean}`);
 
-    // 1) cache hit
     const cached = await dbGet(key);
     if (cached instanceof Blob) {
       await playBlob(cached);
       return;
     }
 
-    // 2) fetch from worker
     const resp = await fetch(WORKER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, lang: "ko-KR", voiceName, speakingRate, pitch }),
+      body: JSON.stringify({ text: clean }),
     });
+
     if (!resp.ok) throw new Error(await resp.text());
 
     const blob = await resp.blob();
-
-    // 3) store cache + play
     await dbSet(key, blob);
     await playBlob(blob);
-  }
+  },
 };
