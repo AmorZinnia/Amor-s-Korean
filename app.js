@@ -5,7 +5,27 @@
    - Default TTS: Web Speech API
    - Optional Neural TTS hook: window.NEURAL_TTS.speak(text, lang)
 */
+const TTS_ENDPOINT = "https://gentle-term-9239.ritacai20070808.workers.dev/";
 
+async function playKoreanTTS(text) {
+  const r = await fetch(TTS_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text })
+  });
+
+  if (!r.ok) {
+    const errText = await r.text().catch(() => "");
+    throw new Error(`TTS failed: ${r.status} ${errText}`);
+  }
+
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+
+  audio.onended = () => URL.revokeObjectURL(url);
+  audio.play();
+}
 const STORAGE_KEY = "morandi_korean_srs_v1";
 const SETTINGS_KEY = "morandi_korean_srs_settings_v1";
 
