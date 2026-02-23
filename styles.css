@@ -301,8 +301,3 @@ body{
 .switch input:checked + .slider::after{
   transform: translateX(18px);
 }
-/* FIX: respect the HTML hidden attribute */
-.modalBackdrop[hidden]{
-  display: none !important;
-}
-body { outline: 3px solid red !important; }
