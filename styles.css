@@ -305,3 +305,4 @@ body{
 .modalBackdrop[hidden]{
   display: none !important;
 }
+body { outline: 3px solid red !important; }
