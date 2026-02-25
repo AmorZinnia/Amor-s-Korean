@@ -63,6 +63,7 @@ function normalizeItem(obj){
     koSentence: "",
     zhSentence: "",
     pron: "",
+    img: "",
     createdAt: nowMs(),
     lastReviewedAt: null,
     stageIndex: 0,
@@ -350,6 +351,108 @@ const btnImportCsv = $("#btnImportCsv");
 
 const voiceEngine = $("#voiceEngine");
 
+// ===================== Image Upload UI (no HTML edits) =====================
+let inImgFile = null;     // <input type="file">
+let inImgPreview = null;  // <img preview>
+let inImgClearBtn = null; // clear button
+
+function ensureImageInputUI(){
+  // 把图片选择器插在 inPron 的下面（不改 HTML）
+  if (!inPron) return;
+  if (document.getElementById("inImgFile")) return;
+
+  const wrap = document.createElement("div");
+  wrap.style.display = "flex";
+  wrap.style.flexDirection = "column";
+  wrap.style.gap = "8px";
+  wrap.style.marginTop = "10px";
+
+  const label = document.createElement("div");
+  label.textContent = "图片（可选）：";
+  label.style.fontSize = "12px";
+  label.style.opacity = "0.8";
+
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.alignItems = "center";
+  row.style.gap = "10px";
+  row.style.flexWrap = "wrap";
+
+  const file = document.createElement("input");
+  file.id = "inImgFile";
+  file.type = "file";
+  file.accept = "image/*";
+
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.textContent = "清除图片";
+  clearBtn.style.cursor = "pointer";
+
+  const preview = document.createElement("img");
+  preview.id = "inImgPreview";
+  preview.alt = "preview";
+  preview.style.width = "96px";
+  preview.style.height = "96px";
+  preview.style.objectFit = "cover";
+  preview.style.borderRadius = "12px";
+  preview.style.border = "1px solid rgba(0,0,0,0.15)";
+  preview.style.display = "none";
+
+  row.appendChild(file);
+  row.appendChild(clearBtn);
+  row.appendChild(preview);
+
+  wrap.appendChild(label);
+  wrap.appendChild(row);
+
+  // 插到发音输入框 inPron 的下面
+  inPron.insertAdjacentElement("afterend", wrap);
+
+  inImgFile = file;
+  inImgPreview = preview;
+  inImgClearBtn = clearBtn;
+
+  file.addEventListener("change", async ()=>{
+    const f = file.files?.[0];
+    if (!f) return;
+    const dataUrl = await fileToDataURL(f, 640); // 压缩，避免 localStorage 爆
+    preview.src = dataUrl;
+    preview.style.display = "block";
+    file.dataset.img = dataUrl; // 临时存着，addOne 时取
+  });
+
+  clearBtn.addEventListener("click", ()=>{
+    file.value = "";
+    delete file.dataset.img;
+    preview.src = "";
+    preview.style.display = "none";
+  });
+}
+
+function fileToDataURL(file, maxW=640){
+  return new Promise((resolve, reject)=>{
+    const fr = new FileReader();
+    fr.onerror = reject;
+    fr.onload = ()=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const scale = Math.min(1, maxW / img.width);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        const out = c.toDataURL("image/jpeg", 0.85);
+        resolve(out);
+      };
+      img.onerror = reject;
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
 let sessionQueue = [];
 let currentItem = null;
 let showingReveal = false;
@@ -752,4 +855,5 @@ if ("speechSynthesis" in window){
 ===================================================== */
 ensureSentenceSpeakButton();
 
+ensureImageInputUI();
 renderAll();
